@@ -33,7 +33,7 @@ import ScreenCaptureKit as SCK
 import CoreMedia
 import Quartz as CoreVideo
 import objc
-from dispatch import dispatch_queue_create, DISPATCH_QUEUE_SERIAL
+from dispatch import dispatch_queue_create, DISPATCH_QUEUE_SERIAL, dispatch_after, dispatch_time, DISPATCH_TIME_NOW, dispatch_get_main_queue
 
 
 class CaptureManager(NSObject):
@@ -99,10 +99,13 @@ class CaptureManager(NSObject):
                 print(f"Failed to add audio output: {audio_error}")
                 return
 
-            started, start_error = self.stream.startCaptureWithCompletionHandler_(None)
-            if not started:
-                print(f"Failed to start capture: {start_error}")
-                return
+            def start_handler(error):
+                if error is not None:
+                    print(f"Failed to start capture: {error}")
+                else:
+                    print("Capture started successfully")
+
+            self.stream.startCaptureWithCompletionHandler_(start_handler)
 
             print(f"Capturing to {output_url.path()}")
 
@@ -128,20 +131,38 @@ class CaptureManager(NSObject):
     def stopCapture(self):
         if self.stream is None:
             return
-        self.stream.stopCaptureWithCompletionHandler_(None)
+
+        def stop_handler(error):
+            if error is not None:
+                print(f"Error stopping capture: {error}")
+
+        self.stream.stopCaptureWithCompletionHandler_(stop_handler)
         if self.video_input is not None:
             self.video_input.markAsFinished()
         if self.audio_input is not None:
             self.audio_input.markAsFinished()
         if self.writer is not None:
-            self.writer.finishWritingWithCompletionHandler_(None)
-        print("Capture saved")
+            def finish_handler():
+                print("Capture saved successfully")
+                # Schedule app termination on main queue after a short delay
+                dispatch_after(
+                    dispatch_time(DISPATCH_TIME_NOW, 500_000_000),  # 0.5 seconds
+                    dispatch_get_main_queue(),
+                    lambda: NSApp.terminate_(None)
+                )
+
+            self.writer.finishWritingWithCompletionHandler_(finish_handler)
+        else:
+            print("Capture saved")
+            NSApp.terminate_(None)
 
     def _make_output_url(self):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         file_name = f"Capture-{timestamp}.mov"
-        movies_dir = pathlib.Path.home() / "Movies"
-        return NSURL.fileURLWithPath_(str(movies_dir / file_name))
+        project_dir = pathlib.Path(__file__).parent.parent
+        captured_videos_dir = project_dir / "captured_videos"
+        captured_videos_dir.mkdir(parents=True, exist_ok=True)
+        return NSURL.fileURLWithPath_(str(captured_videos_dir / file_name))
 
     def _setup_writer(self, output_url, configuration):
         writer, error = AVAssetWriter.alloc().initWithURL_fileType_error_(
@@ -209,6 +230,8 @@ class CaptureManager(NSObject):
             if self.video_input is None or not self.video_input.isReadyForMoreMediaData():
                 return
             pixel_buffer = CoreMedia.CMSampleBufferGetImageBuffer(sample_buffer)
+            if pixel_buffer is None:
+                return
             time = CoreMedia.CMSampleBufferGetPresentationTimeStamp(sample_buffer)
             self.pixel_adaptor.appendPixelBuffer_withPresentationTime_(pixel_buffer, time)
         elif output_type == SCK.SCStreamOutputTypeAudio:
@@ -224,13 +247,16 @@ class CaptureAppDelegate(NSObject):
     def applicationDidFinishLaunching_(self, notification):
         self.manager = CaptureManager.alloc().init()
         self.manager.startCapture()
-        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            10.0, self, "stopCapture:", None, False
-        )
 
-    def stopCapture_(self, timer):
-        self.manager.stopCapture()
-        NSApp.terminate_(None)
+        # Schedule stopCapture to run after 10 seconds on the main queue
+        def stop_callback():
+            self.manager.stopCapture()
+
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, 10_000_000_000),  # 10 seconds in nanoseconds
+            dispatch_get_main_queue(),
+            stop_callback
+        )
 
 
 def main():
