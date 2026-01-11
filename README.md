@@ -23,7 +23,7 @@ uv sync
 ```
 
 This will install the required PyObjC frameworks (including CoreMedia and
-CoreVideo) defined in `pyproject.toml`.
+Quartz for CoreVideo symbols) defined in `pyproject.toml`.
 
 ## Run
 

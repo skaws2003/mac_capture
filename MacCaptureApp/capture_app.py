@@ -31,7 +31,7 @@ from AVFoundation import (
 )
 import ScreenCaptureKit as SCK
 import CoreMedia
-import CoreVideo
+import Quartz as CoreVideo
 from dispatch import dispatch_queue_create, DISPATCH_QUEUE_SERIAL
 
 
