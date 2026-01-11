@@ -3,12 +3,25 @@
 This guide shows how to run the Python ScreenCaptureKit sample and what to
 expect when it starts capturing.
 
+## Dependency setup (uv)
+
+From the repo root:
+
+```bash
+uv sync
+```
+
+## Non-Python dependencies
+
+None. This sample only requires the PyObjC packages installed via `uv` on
+macOS 13+ (including CoreMedia and CoreVideo).
+
 ## Quick start
 
 From the repo root:
 
 ```bash
-python3 MacCaptureApp/capture_app.py
+uv run python MacCaptureApp/capture_app.py
 ```
 
 Expected output:
