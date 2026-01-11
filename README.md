@@ -11,25 +11,27 @@ By default it records for ~10 seconds and exits.
 ## Requirements
 
 - macOS 13+ (ScreenCaptureKit is only available on newer macOS releases)
-- Python 3.10+
-- [uv](https://github.com/astral-sh/uv) for dependency management
+- Python 3
+- PyObjC with ScreenCaptureKit + AVFoundation bindings
 
-## Dependency setup (uv)
+## Setup
 
-From the repo root:
+Install PyObjC (one way):
 
 ```bash
-uv sync
+python3 -m pip install --upgrade pip
+python3 -m pip install pyobjc pyobjc-framework-ScreenCaptureKit pyobjc-framework-AVFoundation
 ```
 
-This will install the required PyObjC frameworks defined in `pyproject.toml`.
+> Note: You may need additional PyObjC frameworks depending on your Python setup
+> and macOS version. The above packages cover the frameworks used in this sample.
 
 ## Run
 
 From the repo root:
 
 ```bash
-uv run python MacCaptureApp/capture_app.py
+python3 MacCaptureApp/capture_app.py
 ```
 
 You should see console output like:
