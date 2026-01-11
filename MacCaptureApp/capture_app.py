@@ -31,6 +31,7 @@ from AVFoundation import (
 )
 import ScreenCaptureKit as SCK
 import CoreMedia
+import AudioToolbox
 import Quartz as CoreVideo
 import objc
 from dispatch import dispatch_queue_create, DISPATCH_QUEUE_SERIAL
@@ -171,7 +172,7 @@ class CaptureManager(NSObject):
         )
 
         audio_settings = {
-            AVFormatIDKey: CoreMedia.kAudioFormatMPEG4AAC,
+            AVFormatIDKey: AudioToolbox.kAudioFormatMPEG4AAC,
             AVSampleRateKey: configuration.sampleRate(),
             AVNumberOfChannelsKey: configuration.channelCount(),
             AVEncoderBitRateKey: 128_000,

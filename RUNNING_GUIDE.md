@@ -14,7 +14,7 @@ uv sync
 ## Non-Python dependencies
 
 None. This sample only requires the PyObjC packages installed via `uv` on
-macOS 13+ (including CoreMedia and Quartz for CoreVideo symbols).
+macOS 13+ (including AudioToolbox, CoreMedia, and Quartz for CoreVideo symbols).
 
 ## Quick start
 
