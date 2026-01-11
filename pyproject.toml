@@ -1,0 +1,13 @@
+[project]
+name = "mac-capture"
+version = "0.1.0"
+description = "Minimal macOS ScreenCaptureKit recorder in Python"
+requires-python = ">=3.10"
+dependencies = [
+    "pyobjc",
+    "pyobjc-framework-ScreenCaptureKit",
+    "pyobjc-framework-AVFoundation",
+]
+
+[tool.uv]
+package = false
