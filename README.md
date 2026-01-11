@@ -22,8 +22,8 @@ From the repo root:
 uv sync
 ```
 
-This will install the required PyObjC frameworks (including AudioToolbox,
-CoreMedia, and Quartz for CoreVideo symbols) defined in `pyproject.toml`.
+This will install the required PyObjC frameworks (including CoreMedia and
+Quartz for CoreVideo symbols) defined in `pyproject.toml`.
 
 ## Run
 
