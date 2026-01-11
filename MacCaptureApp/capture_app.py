@@ -9,8 +9,15 @@ Requirements:
   * PyObjC with ScreenCaptureKit and AVFoundation bindings
 """
 
+import argparse
 import datetime
 import pathlib
+import signal
+import os
+import sys
+import threading
+import tty
+import termios
 
 from Cocoa import NSApp, NSApplication, NSObject, NSTimer
 from Foundation import NSURL
@@ -33,7 +40,82 @@ import ScreenCaptureKit as SCK
 import CoreMedia
 import Quartz as CoreVideo
 import objc
-from dispatch import dispatch_queue_create, DISPATCH_QUEUE_SERIAL, dispatch_after, dispatch_time, DISPATCH_TIME_NOW, dispatch_get_main_queue
+from dispatch import dispatch_queue_create, DISPATCH_QUEUE_SERIAL, dispatch_after, dispatch_time, DISPATCH_TIME_NOW, dispatch_get_main_queue, dispatch_async
+
+
+# Global delegate reference for signal handling
+_global_delegate = None
+_keyboard_monitor_stop = threading.Event()
+
+
+def trigger_interrupt():
+    """Trigger interrupt handling (called by signal handler or keyboard monitor)"""
+    global _global_delegate
+    # Print immediately without buffering
+    sys.stdout.write("\n\n*** Keyboard interrupt detected ***\n")
+    sys.stdout.flush()
+
+    if _global_delegate and _global_delegate.manager:
+        # Set stop_reason but NOT is_stopping yet - stopCapture needs to run the stream stop logic
+        _global_delegate.manager.stop_reason = "interrupt"
+
+        # Try to stop gracefully
+        def do_stop():
+            sys.stdout.write("Stopping capture...\n")
+            sys.stdout.flush()
+            _global_delegate.manager.stopCapture()
+
+        dispatch_async(dispatch_get_main_queue(), do_stop)
+
+        # Failsafe: if not stopped in 2 seconds, force exit
+        def force_exit():
+            sys.stdout.write("\nForce exiting...\n")
+            sys.stdout.flush()
+            # Use sys.exit() instead of os._exit() to allow proper cleanup and file flushing
+            sys.exit(0)
+
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, 2_000_000_000),  # 2 seconds
+            dispatch_get_main_queue(),
+            force_exit
+        )
+
+
+def handle_sigint(signum, frame):
+    """Handle SIGINT signal"""
+    trigger_interrupt()
+
+
+def keyboard_monitor():
+    """Monitor keyboard input in a separate thread for ESC key"""
+    original_settings = None
+    try:
+        # Save original terminal settings
+        original_settings = termios.tcgetattr(sys.stdin)
+        # Set terminal to cbreak mode (unbuffered, but preserve line discipline)
+        tty.setcbreak(sys.stdin.fileno())
+        # Disable echo
+        new_settings = termios.tcgetattr(sys.stdin)
+        new_settings[3] = new_settings[3] & ~termios.ECHO
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, new_settings)
+
+        while not _keyboard_monitor_stop.is_set():
+            ch = sys.stdin.read(1)
+            # ESC key is ASCII 27 (0x1b)
+            if ch == '\x1b':
+                trigger_interrupt()
+                break
+    except KeyboardInterrupt:
+        trigger_interrupt()
+    except:
+        pass
+    finally:
+        # Restore original terminal settings
+        if original_settings is not None:
+            try:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, original_settings)
+            except:
+                pass
 
 
 class CaptureManager(NSObject):
@@ -47,6 +129,8 @@ class CaptureManager(NSObject):
         self.audio_input = None
         self.pixel_adaptor = None
         self.session_start_time = None
+        self.stop_reason = None  # "interrupt" or "time"
+        self.is_stopping = False  # Prevent multiple stop calls
         self.capture_queue = dispatch_queue_create(
             b"com.example.maccapture.capture", DISPATCH_QUEUE_SERIAL
         )
@@ -69,12 +153,12 @@ class CaptureManager(NSObject):
                 print("Failed to build content filter for display")
                 return
             configuration = SCK.SCStreamConfiguration.alloc().init()
-            configuration.setWidth_(display.width())
-            configuration.setHeight_(display.height())
+            configuration.setWidth_(1920)
+            configuration.setHeight_(1080)
             configuration.setCapturesAudio_(True)
             configuration.setSampleRate_(48_000)
             configuration.setChannelCount_(2)
-            configuration.setMinimumFrameInterval_(CoreMedia.CMTimeMake(1, 60))
+            configuration.setMinimumFrameInterval_(CoreMedia.CMTimeMake(1, 30))
             configuration.setQueueDepth_(5)
 
             output_url = self._make_output_url()
@@ -132,18 +216,55 @@ class CaptureManager(NSObject):
         if self.stream is None:
             return
 
-        def stop_handler(error):
-            if error is not None:
-                print(f"Error stopping capture: {error}")
-
-        self.stream.stopCaptureWithCompletionHandler_(stop_handler)
+        # Mark inputs as finished immediately to stop accepting new data
         if self.video_input is not None:
             self.video_input.markAsFinished()
         if self.audio_input is not None:
             self.audio_input.markAsFinished()
-        if self.writer is not None:
+
+        # Prevent multiple stream stop calls
+        if self.is_stopping:
+            # Already stopping, just schedule finish writing immediately
+            dispatch_after(
+                dispatch_time(DISPATCH_TIME_NOW, 100_000_000),  # 0.1 seconds
+                dispatch_get_main_queue(),
+                self._finish_writing
+            )
+            return
+
+        self.is_stopping = True
+
+        def stop_handler(error):
+            # Ignore stream stop errors (stream may already be stopping)
+            if error is not None and "already" not in str(error):
+                print(f"Error stopping capture: {error}")
+
+            # Delay briefly to allow pending data to be processed, then finish writing
+            dispatch_after(
+                dispatch_time(DISPATCH_TIME_NOW, 200_000_000),  # 0.2 seconds
+                dispatch_get_main_queue(),
+                self._finish_writing
+            )
+
+        self.stream.stopCaptureWithCompletionHandler_(stop_handler)
+
+    def _finish_writing(self):
+        """Finish writing the video file after stream is stopped"""
+        if self.writer is None:
+            return
+
+        # Check writer status: 0=unknown, 1=writing, 2=finished, 3=failed, 4=cancelled
+        status = self.writer.status()
+        if status != 1:  # Only finish if currently writing
+            reason_text = "time limit reached" if self.stop_reason == "time" else "user interrupted"
+            print(f"Capture saved successfully (stopped by: {reason_text})")
+            NSApp.terminate_(None)
+            return
+
+        try:
             def finish_handler():
-                print("Capture saved successfully")
+                reason_text = "time limit reached" if self.stop_reason == "time" else "user interrupted"
+                print(f"Capture saved successfully (stopped by: {reason_text})")
                 # Schedule app termination on main queue after a short delay
                 dispatch_after(
                     dispatch_time(DISPATCH_TIME_NOW, 500_000_000),  # 0.5 seconds
@@ -152,8 +273,8 @@ class CaptureManager(NSObject):
                 )
 
             self.writer.finishWritingWithCompletionHandler_(finish_handler)
-        else:
-            print("Capture saved")
+        except Exception as e:
+            print(f"Error finishing writing: {e}")
             NSApp.terminate_(None)
 
     def _make_output_url(self):
@@ -248,21 +369,77 @@ class CaptureAppDelegate(NSObject):
         self.manager = CaptureManager.alloc().init()
         self.manager.startCapture()
 
-        # Schedule stopCapture to run after 10 seconds on the main queue
+        # Schedule stopCapture to run after specified duration
         def stop_callback():
+            # Only set stop_reason to "time" if not already stopped by interrupt
+            if not self.manager.is_stopping:
+                self.manager.stop_reason = "time"
             self.manager.stopCapture()
 
+        duration_ns = int(self.duration_seconds * 1_000_000_000)
         dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW, 10_000_000_000),  # 10 seconds in nanoseconds
+            dispatch_time(DISPATCH_TIME_NOW, duration_ns),
             dispatch_get_main_queue(),
             stop_callback
         )
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Minimal macOS ScreenCaptureKit recorder - captures screen and audio to a .mov file"
+    )
+    parser.add_argument(
+        "-t", "--time",
+        type=int,
+        default=3600,
+        help="Maximum recording duration in seconds (default: 3600 = 1 hour)"
+    )
+    parser.add_argument(
+        "-s", "--simulate-interrupt",
+        type=int,
+        metavar="SECONDS",
+        help="Simulate keyboard interrupt after N seconds (for testing)"
+    )
+    args = parser.parse_args()
+
+    if args.time <= 0:
+        print("Error: Recording duration must be greater than 0")
+        return
+
+    # Set up signal handler for Ctrl+C
+    signal.signal(signal.SIGINT, handle_sigint)
+
+    # Start keyboard monitor thread to catch Ctrl+C
+    monitor_thread = threading.Thread(target=keyboard_monitor, daemon=True)
+    monitor_thread.start()
+
     app = NSApplication.sharedApplication()
     delegate = CaptureAppDelegate.alloc().init()
+    delegate.duration_seconds = args.time
+
+    global _global_delegate
+    _global_delegate = delegate
+
     app.setDelegate_(delegate)
+
+    # If simulate-interrupt is set, automatically trigger interrupt after specified time
+    if args.simulate_interrupt is not None:
+        print(f"Recording will stop after {args.time} seconds, or simulate interrupt after {args.simulate_interrupt} seconds")
+
+        def simulate_interrupt():
+            sys.stdout.write(f"\n[SIMULATED INTERRUPT at {args.simulate_interrupt}s]\n")
+            sys.stdout.flush()
+            handle_sigint(signal.SIGINT, None)
+
+        interrupt_ns = int(args.simulate_interrupt * 1_000_000_000)
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, interrupt_ns),
+            dispatch_get_main_queue(),
+            simulate_interrupt
+        )
+    else:
+        print(f"Recording will stop after {args.time} seconds, or press ESC to stop early")
+
     app.run()
 
 
