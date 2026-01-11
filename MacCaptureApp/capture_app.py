@@ -64,9 +64,10 @@ class CaptureManager(NSObject):
                 return
 
             display = displays[0]
-            filter = SCK.SCContentFilter.alloc().initWithDisplay_excludingWindows_exceptingApplications_(
-                display, [], []
-            )
+            filter = self._make_filter(display)
+            if filter is None:
+                print("Failed to build content filter for display")
+                return
             configuration = SCK.SCStreamConfiguration.alloc().init()
             configuration.setWidth_(display.width())
             configuration.setHeight_(display.height())
@@ -106,6 +107,23 @@ class CaptureManager(NSObject):
             print(f"Capturing to {output_url.path()}")
 
         SCK.SCShareableContent.getShareableContentWithCompletionHandler_(handler)
+
+    def _make_filter(self, display):
+        if hasattr(SCK.SCContentFilter, "filterWithDisplay_excludingWindows_exceptingApplications_"):
+            return SCK.SCContentFilter.filterWithDisplay_excludingWindows_exceptingApplications_(
+                display, [], []
+            )
+        if hasattr(SCK.SCContentFilter, "filterWithDisplay_excludingWindows_"):
+            return SCK.SCContentFilter.filterWithDisplay_excludingWindows_(display, [])
+
+        instance = SCK.SCContentFilter.alloc()
+        if hasattr(instance, "initWithDisplay_excludingWindows_exceptingApplications_"):
+            return instance.initWithDisplay_excludingWindows_exceptingApplications_(
+                display, [], []
+            )
+        if hasattr(instance, "initWithDisplay_excludingWindows_"):
+            return instance.initWithDisplay_excludingWindows_(display, [])
+        return None
 
     def stopCapture(self):
         if self.stream is None:
