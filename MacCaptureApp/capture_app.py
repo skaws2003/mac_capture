@@ -32,12 +32,13 @@ from AVFoundation import (
 import ScreenCaptureKit as SCK
 import CoreMedia
 import Quartz as CoreVideo
+import objc
 from dispatch import dispatch_queue_create, DISPATCH_QUEUE_SERIAL
 
 
 class CaptureManager(NSObject):
     def init(self):
-        self = super().init()
+        self = objc.super(CaptureManager, self).init()
         if self is None:
             return None
         self.stream = None
@@ -63,7 +64,7 @@ class CaptureManager(NSObject):
                 return
 
             display = displays[0]
-            filter = SCK.SCContentFilter.filterWithDisplay_excludingWindows_exceptingApplications_(
+            filter = SCK.SCContentFilter.alloc().initWithDisplay_excludingWindows_exceptingApplications_(
                 display, [], []
             )
             configuration = SCK.SCStreamConfiguration.alloc().init()
