@@ -131,6 +131,7 @@ class CaptureManager(NSObject):
         self.session_start_time = None
         self.stop_reason = None  # "interrupt" or "time"
         self.is_stopping = False  # Prevent multiple stop calls
+        self.selected_display_index = 0  # Default to first display
         self.capture_queue = dispatch_queue_create(
             b"com.example.maccapture.capture", DISPATCH_QUEUE_SERIAL
         )
@@ -140,17 +141,26 @@ class CaptureManager(NSObject):
         def handler(content, error):
             if error is not None:
                 print(f"Failed to get shareable content: {error}")
+                NSApp.terminate_(None)
                 return
 
             displays = content.displays()
             if not displays:
                 print("No displays available")
+                NSApp.terminate_(None)
                 return
 
-            display = displays[0]
+            if self.selected_display_index >= len(displays):
+                print(f"Error: Display {self.selected_display_index} not found. Available displays: {len(displays)}")
+                NSApp.terminate_(None)
+                return
+
+            display = displays[self.selected_display_index]
+            print(f"Using display {self.selected_display_index}: {self._get_display_info(display)}")
             filter = self._make_filter(display)
             if filter is None:
                 print("Failed to build content filter for display")
+                NSApp.terminate_(None)
                 return
             configuration = SCK.SCStreamConfiguration.alloc().init()
             configuration.setWidth_(1920)
@@ -163,6 +173,7 @@ class CaptureManager(NSObject):
 
             output_url = self._make_output_url()
             if not self._setup_writer(output_url, configuration):
+                NSApp.terminate_(None)
                 return
 
             self.stream = SCK.SCStream.alloc().initWithFilter_configuration_delegate_(
@@ -174,6 +185,7 @@ class CaptureManager(NSObject):
             )
             if not screen_added:
                 print(f"Failed to add screen output: {screen_error}")
+                NSApp.terminate_(None)
                 return
 
             audio_added, audio_error = self.stream.addStreamOutput_type_sampleHandlerQueue_error_(
@@ -181,11 +193,13 @@ class CaptureManager(NSObject):
             )
             if not audio_added:
                 print(f"Failed to add audio output: {audio_error}")
+                NSApp.terminate_(None)
                 return
 
             def start_handler(error):
                 if error is not None:
                     print(f"Failed to start capture: {error}")
+                    NSApp.terminate_(None)
                 else:
                     print("Capture started successfully")
 
@@ -194,6 +208,13 @@ class CaptureManager(NSObject):
             print(f"Capturing to {output_url.path()}")
 
         SCK.SCShareableContent.getShareableContentWithCompletionHandler_(handler)
+
+    def _get_display_info(self, display):
+        """Get display information (resolution)"""
+        frame = display.frame()
+        width = frame.size.width
+        height = frame.size.height
+        return f"{int(width)}x{int(height)}"
 
     def _make_filter(self, display):
         if hasattr(SCK.SCContentFilter, "filterWithDisplay_excludingWindows_exceptingApplications_"):
@@ -316,7 +337,7 @@ class CaptureManager(NSObject):
             AVFormatIDKey: 0x61616320,
             AVSampleRateKey: configuration.sampleRate(),
             AVNumberOfChannelsKey: configuration.channelCount(),
-            AVEncoderBitRateKey: 128_000,
+            AVEncoderBitRateKey: 256_000,
         }
         audio_input = AVAssetWriterInput.alloc().initWithMediaType_outputSettings_(
             AVMediaTypeAudio, audio_settings
@@ -367,6 +388,7 @@ class CaptureManager(NSObject):
 class CaptureAppDelegate(NSObject):
     def applicationDidFinishLaunching_(self, notification):
         self.manager = CaptureManager.alloc().init()
+        self.manager.selected_display_index = self.display_index
         self.manager.startCapture()
 
         # Schedule stopCapture to run after specified duration
@@ -384,6 +406,43 @@ class CaptureAppDelegate(NSObject):
         )
 
 
+def list_displays():
+    """List all available displays"""
+    def handler(content, error):
+        if error is not None:
+            sys.stderr.write(f"Failed to get shareable content: {error}\n")
+            sys.stderr.flush()
+        else:
+            displays = content.displays()
+            if not displays:
+                sys.stdout.write("No displays available\n")
+                sys.stdout.flush()
+            else:
+                sys.stdout.write("Available displays:\n")
+                sys.stdout.flush()
+                for i, display in enumerate(displays):
+                    frame = display.frame()
+                    width = int(frame.size.width)
+                    height = int(frame.size.height)
+                    origin_x = int(frame.origin.x)
+                    origin_y = int(frame.origin.y)
+                    sys.stdout.write(f"  Display {i}: {width}x{height} at position ({origin_x}, {origin_y})\n")
+                    sys.stdout.flush()
+
+        # Exit the event loop after handler completes
+        def exit_app():
+            NSApp.terminate_(None)
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, 100_000_000),  # 0.1 seconds
+            dispatch_get_main_queue(),
+            exit_app
+        )
+
+    app = NSApplication.sharedApplication()
+    SCK.SCShareableContent.getShareableContentWithCompletionHandler_(handler)
+    app.run()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Minimal macOS ScreenCaptureKit recorder - captures screen and audio to a .mov file"
@@ -395,6 +454,17 @@ def main():
         help="Maximum recording duration in seconds (default: 3600 = 1 hour)"
     )
     parser.add_argument(
+        "-d", "--display",
+        type=int,
+        default=0,
+        help="Display index to record (default: 0). Use --list-displays to see available displays"
+    )
+    parser.add_argument(
+        "--list-displays",
+        action="store_true",
+        help="List all available displays and exit"
+    )
+    parser.add_argument(
         "-s", "--simulate-interrupt",
         type=int,
         metavar="SECONDS",
@@ -402,8 +472,17 @@ def main():
     )
     args = parser.parse_args()
 
+    # Handle --list-displays
+    if args.list_displays:
+        list_displays()
+        return
+
     if args.time <= 0:
         print("Error: Recording duration must be greater than 0")
+        return
+
+    if args.display < 0:
+        print("Error: Display index must be >= 0")
         return
 
     # Set up signal handler for Ctrl+C
@@ -416,6 +495,7 @@ def main():
     app = NSApplication.sharedApplication()
     delegate = CaptureAppDelegate.alloc().init()
     delegate.duration_seconds = args.time
+    delegate.display_index = args.display
 
     global _global_delegate
     _global_delegate = delegate
